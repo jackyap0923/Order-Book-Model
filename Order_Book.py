@@ -35,18 +35,20 @@ class OrderBook:
     def update_book(self):
         """"Update the order book by sorting bids and asks."""
         self.bids = sorted(self.bids.keys(), reverse=True)
-        self.asks = sorted(seelf)
+        self.asks = sorted(self.asks.keys())
 
     def add_limit_order(self, side, price, quantity):
         order_id = next(self.order_id_counter)
         order = Order(order_id, side, price, quantity)
         book = self.bids if side == 'bid' else self.asks
         book[price].append(order)
-        
+
+        self.update_book() #Rearrages the book after adding a new order
+
         return order
     
     def add_market_order(self, side, quantity):
         book = self.bids if side == 'bid' else self.asks
         if not book:
-            raise ValueError("No orders available for matching.")
+            raise ValueError("No orders available in market.")
         
