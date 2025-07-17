@@ -37,7 +37,7 @@ class OrderBook:
         self.bids = sorted(self.bids.keys(), reverse=True)
         self.asks = sorted(self.asks.keys())
 
-    def add_limit_order(self, side, price, quantity):
+    def limit_order(self, side, price, quantity):
         order_id = next(self.order_id_counter)
         order = Order(order_id, side, price, quantity)
         book = self.bids if side == 'bid' else self.asks
@@ -47,8 +47,40 @@ class OrderBook:
 
         return order
     
-    def add_market_order(self, side, quantity):
-        book = self.bids if side == 'bid' else self.asks
+    def market_order(self, side, quantity):
+        book = self.bids if side == 'ask' else self.asks #Look at opposite side of book e.g. people buying will look at asks, vice versa.
         if not book:
             raise ValueError("No orders available in market.")
-        
+        else:
+            if side =='bid': # Look at ask book
+                best_price = min(book.keys())
+            elif side =='ask': # Looks at bid book
+                best_price = max(book.keys())
+            else:
+                raise ValueError("Side must be 'bid' or 'ask'")
+            
+            orders = book[best_price]
+
+            for order in orders:
+                if order.quantity >= quantity: #order can be fully filled
+                    order.quantity -= quantity 
+                    if order.quantity > 0:
+                        print(f"Orders have been filled.")
+                        break #Order remains in book but with reduced quantity and exit for
+                    elif order.quantity == 0:
+                        orders.popleft() #Remove order if quantity is zero and exit for
+                        print(f"Orders have been filled")
+                        break
+                    else:
+                        raise ValueError("Order quantity cannot be negative.")
+                        
+                else: #Partial fill of order 
+                    quantity -= order.quantity 
+                    orders.popleft() 
+                    continue
+
+            if not orders: # If no orders left at this price, remove the price level from the book
+                del book[best_price]
+
+        self.update_book() #Rearranges the book after processing market order
+
