@@ -34,8 +34,8 @@ class OrderBook:
 
     def update_book(self):
         """"Update the order book by sorting bids and asks."""
-        self.bids = sorted(self.bids.keys(), reverse=True)
-        self.asks = sorted(self.asks.keys())
+        self.bids = sorted(self.bids.keys())
+        self.asks = sorted(self.asks.keys(),revserse=True)
 
     def order_fill_logic(self, orders, quantity):
         for order in orders:
@@ -55,42 +55,61 @@ class OrderBook:
             
         return quantity #Return remaining quantity to be filled
     
-    def liquidity_check(self, book, price_level, quantity):
-        prices_to_fill = []
-         #Checking for all available liquidity at or below price
-        for price in book.keys():
-            orders = book[price]
-            temp_quantity = quantity
-            total_quantity = 0
-            for order in orders:
-                total_quantity += order.quantity
-            #append the price levels where fok can be filled
-            if total_quantity >= temp_quantity:
-                prices_to_fill.append(price)
-                break
-            else:
-                prices_to_fill.append(price)
-                temp_quantity -= total_quantity
+    def liquidity_check(self, book, order):
+        matching_prices = []
+        price_level = order.price
+        quantity = order.quantity
+        side = order.side        
+        total_quantity = 0
 
-        return prices_to_fill, total_quantity
+        #Checking for all available liquidity at or below price
+        for price in book.keys():
+            if (side == 'bid' and price <= price_level) or (side == 'ask' and price >= price_level):
+                matching_prices.append(price)
+                orders = book[price]
+                for o in orders:
+                    total_quantity += o.quantity
+                    if total_quantity >= quantity:
+                        return matching_prices, total_quantity
+                    
+            else:
+                break #Exit if price is not within the limit
+
+        return matching_prices, total_quantity
+
+    def add_order(self, book, order):
+        """"Add an order to the order book. Does not change order id."""
+        price = order.price
+        book[price].append(order) 
 
     def limit_order(self, side, price, quantity):
         order_id = next(self.order_id_counter)
-        order = Order(order_id, side, price, quantity)
-        book = self.bids if side == 'ask' else self.asks #Looks at opposite side of book to check for matching orders
+        limit_order = Order(order_id, side, price, quantity)
+        matching_book = self.bids if side == 'ask' else self.asks #Looks at opposite side of book to check for matching orders
+        book = self.bids if side == 'bid' else self.asks #
 
         #Check if order can be filled or partially filled
+        matching_prices, total_quantity = self.liquidity_check(matching_book, limit_order)
+        
+        #If no matching prices, add to book and print 
+        if not matching_prices:
+            self.add_order(book, limit_order)
+            print(f"No orders available at or below price {price}.")
+        else:
+            for match_price in matching_prices:
+                orders = matching_book[match_price]
+                limit_order.quantity = self.order_fill_logic(orders, limit_order.quantity)
 
+                if limit_order.quantity == 0: #Order fully filled
+                    return print(f"Order {order_id} fully filled at price {match_price}.")
 
-        #If unable to fill, add to book
-        book = self.bids if side == 'bid' else self.asks #Add to correct side of book
-        book[price].append(order)
+            if limit_order.quantity > 0: #Order partially filled
+                self.add_order(book, limit_order) #Add remaining order to book
+                print(f"Order {order_id} partially filled. Remaining quantity: {limit_order.quantity}. Added to book at price {price}.")
 
+        self.update_book() #Rearranges the book after processing limit order
 
-
-        self.update_book() #Rearrages the book after adding a new order
-
-        return order
+        return limit_order
     
     def market_order(self, side, quantity):
         book = self.bids if side == 'ask' else self.asks #Look at opposite side of book e.g. people buying will look at asks, vice versa.
