@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from collections import defaultdict, deque
+from sortedcontainers import SortedDict
+from collections import deque
 import warnings
 import itertools
 warnings.filterwarnings("ignore")
@@ -25,35 +26,57 @@ class Order:
     def __repr__(self):
         return f"Order(order_id={self.order_id}, side={self.side}, price={self.price}, quantity={self.quantity})"
 
+class StopOrder:
+    def __init__(self, stop_order_id, side, stop_price, quantity):
+        if stop_price <= 0:
+            raise ValueError("Stop price must be greater than 0")
+        if quantity <= 0:
+            raise ValueError("Quantity must be greater than 0")
+        if side not in ['bid', 'ask']:
+            raise ValueError("Side must be 'bid' or 'ask'")
+        
+        self.stop_order_id = stop_order_id #separate from order_id
+        self.side = side #bid or ask
+        self.stop_price = stop_price
+        self.quantity = quantity
+
+    def __repr__(self):
+        return f"StopOrder(stop_order_id={self.stop_order_id}, side={self.side}, stop_price={self.stop_price}, quantity={self.quantity})"
+
 class OrderBook:
     def __init__(self):
         #Entire Order Book stored in dictionaries with deques for fast access
-        self.bids = defaultdict(deque)
-        self.asks = defaultdict(deque)
+        self.bids = SortedDict()  
+        self.asks = SortedDict()
         self.order_id_counter = itertools.count()
+        self.stop_orders_market =SortedDict() #For stop market orders, key is stop price, value is a list of orders
+        self.stop_orders_limit = SortedDict() #For stop limit orders, key is stop price, value is a list of orders
+        self.stop_order_id_counter = itertools.count() #Separate counter for stop orders
 
-    def update_book(self):
-        """"Update the order book by sorting bids and asks."""
-        self.bids = sorted(self.bids.keys())
-        self.asks = sorted(self.asks.keys(),revserse=True)
-
-    def order_fill_logic(self, orders, quantity):
+    def order_fill_logic(self, side, orders, quantity):
         for order in orders:
             if order.quantity >= quantity: #order can be fully filled
                 order.quantity -= quantity 
                 if order.quantity > 0:
-                    break #Order remains in book but with reduced quantity and exit for
+                    print(f"[Taker] Order Filled at price {order.price}") #Order remains in book but with reduced quantity and exit for
+                    return print(f"[Maker] Order_id: {order.order_id}. {order.quantity} partially filled at price {order.price}. Remaining quantity: {order.quantity}")
+                
                 elif order.quantity == 0:
-                    orders.popleft() #Remove order if quantity is zero and exit for
-                    break
+                    orders.popright() if side =='bid' else order.popleft() #Remove order from book if maker order is fully filled
+                    print(f"[Taker] Order Filled at price {order.price}")
+                    return  print(f'[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.')
+                
                 else:
                     raise ValueError("Order quantity cannot be negative.")
                     
             else: #Order is partially filled
+                temp_quantity = quantity
                 quantity -= order.quantity 
-                orders.popleft() 
-            
-        return quantity #Return remaining quantity to be filled
+                orders.popright() if side =='bid' else orders.popleft() #Remove order from book 
+                print(f"[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.")
+                print(f"[Taker] {temp_quantity} partially filled at price {order.price}. Remaining quantity: {quantity}.")
+
+        return quantity
     
     def liquidity_check(self, book, order):
         matching_prices = []
@@ -77,9 +100,16 @@ class OrderBook:
 
         return matching_prices, total_quantity
 
+    """def stop_market_order_check(self):
+        for stop_price, orders in self"""
+            
+
     def add_order(self, book, order):
         """"Add an order to the order book. Does not change order id."""
         price = order.price
+        if order.price not in book.keys():
+            book[price] = deque()
+        
         book[price].append(order) 
 
     def limit_order(self, side, price, quantity):
@@ -100,6 +130,9 @@ class OrderBook:
                 orders = matching_book[match_price]
                 limit_order.quantity = self.order_fill_logic(orders, limit_order.quantity)
 
+                if not orders: #If no orders left at this price, remove the price level from the book
+                    del matching_book[match_price]
+
                 if limit_order.quantity == 0: #Order fully filled
                     return print(f"Order {order_id} fully filled at price {match_price}.")
 
@@ -107,48 +140,113 @@ class OrderBook:
                 self.add_order(book, limit_order) #Add remaining order to book
                 print(f"Order {order_id} partially filled. Remaining quantity: {limit_order.quantity}. Added to book at price {price}.")
 
-        self.update_book() #Rearranges the book after processing limit order
-
         return limit_order
     
     def market_order(self, side, quantity):
-        book = self.bids if side == 'ask' else self.asks #Look at opposite side of book e.g. people buying will look at asks, vice versa.
-        if not book:
+        order_id = next(self.order_id_counter)
+        market_order = Order(order_id, side, None, quantity) #Price is None for market orders
+        matching_book = self.bids if side == 'ask' else self.asks #Look at opposite side of book e.g. people buying will look at asks, vice versa.
+        if not matching_book:
             raise ValueError("No orders available in market.")
         else:
             if side =='bid': # Look at ask book
-                best_price = min(book.keys())
-            elif side =='ask': # Looks at bid book
-                best_price = max(book.keys())
+                best_price = matching_book.peekitem(0)[0] # Get the LOWEST ask price
+            elif side =='ask': #Look at bid book
+                best_price = matching_book.peekitem(-1)[0] #Get the HIGHEST bid price
             else:
                 raise ValueError("Side must be 'bid' or 'ask'")
             
-            orders = book[best_price]
+            orders = matching_book[best_price]
 
-            self.order_fill_logic(orders, quantity) #Fill the market order with available orders at market price
+            remaining_quantity = self.order_fill_logic(orders, quantity) #Fill the market order with available orders at market price
+            
+            market_order.quantity = quantity - remaining_quantity #Update market order to filled quantity
+            market_order.price = best_price #Set market order price to the best price available
 
             if not orders: # If no orders left at this price, remove the price level from the book
-                del book[best_price]
+                del matching_book[best_price]
 
-        self.update_book() #Rearranges the book after processing market order
-
+        return market_order
+    
         #Order must be filled immeidiately or cancelled. Filled until all improvement prices are filled.
-        def fill_or_kill_order(self, side, price, quantity, limit=False): 
-            book = self.bids if side =='ask' else self.asks
-            
-            if not book:
-                raise ValueError("No order avaialable in market.")
-            if price < book.keys():
-                raise ValueError(f"No orders available at or below price {price}.")
-            
-            fok_prices, 
-            
-            #Raise error if not enough liquidity is present
-            if total_quantity < quantity:
-                raise ValueError(f"Not enough quantity available at or below price {price}.")
-            else:
-                for price in fok_prices:
-                    orders = book[price]
-                    self.order_fill_logic(orders, quantity)
-                    if not orders:
-                        del book[price]
+    def fill_or_kill_order(self, side, price, quantity): 
+        book = self.bids if side =='ask' else self.asks
+        
+        if not book:
+            raise ValueError("No order avaialable in market.")
+        if price < book.keys():
+            raise ValueError(f"No orders available at or below price {price}.")
+        
+        fok_prices, 
+        
+        #Raise error if not enough liquidity is present
+        if total_quantity < quantity:
+            raise ValueError(f"Not enough quantity available at or below price {price}.")
+        else:
+            for price in fok_prices:
+                orders = book[price]
+                self.order_fill_logic(orders, quantity)
+                if not orders:
+                    del book[price]
+
+    def immediate_or_cancel_order(self):
+        """"Fill as much as possible at the best price, cancel the rest."""
+        pass
+
+    def stop_order(self, side, stop_price, quantity):
+        """Triggers market order once stop price is reached."""
+        stop_order_id = next(self.order_id_counter)
+        stop_order = StopOrder(stop_order_id, side, stop_price, quantity)
+        book = self.bids if side == 'ask' else self.asks
+        best_price = book.peekitem(0)[0] if side == 'bid' else book.peekitem(-1)[0]
+
+        # Check if book is empty
+        if not book:
+            self.stop_orders_market[stop_price] = deque() #Intialize a new deque if no orders exist at this stop price
+            self.stop_orders_market[stop_price].append(stop_order)
+            print(f"Stop order {stop_order_id} added at stop price {stop_price}.")
+
+        #Chcek if stop price is reached
+        if (side == 'bid' and stop_price >= best_price) or (side == 'ask' and stop_price <= best_price):
+            # If stop price is reached, trigger market order
+            print(f"Stop price {stop_price} reached. Triggering market order.")
+            market_order = self.market_order(side, quantity)
+            return market_order
+        # If stop price not reached, add to stop orders market
+        else:
+            if stop_price not in self.stop_orders_market.keys():
+                self.stop_orders_market[stop_price] = deque()
+            self.stop_orders_market[stop_price].append(stop_order)
+            print(f"Stop order {stop_order_id} added at stop price {stop_price}. Waiting for trigger.")
+
+            return stop_order
+
+    def stop_limit_order(self, side, stop_price, limit_price, quantity):
+        """Triggers a limit order once stop price is reached."""
+        stop_order_id = next(self.order_id_counter)
+        stop_order = StopOrder(stop_order_id, side, stop_price, quantity)
+        book = self.bids if side == 'ask' else self.asks
+        best_price = book.peekitem(0)[0] if side == 'bid' else book.peekitem(-1)[0]
+
+         # Check if book is empty
+        if not book:
+            self.stop_orders_limit[stop_price] = deque() #Intialize a new deque if no orders exist at this stop price
+            self.stop_orders_limit[stop_price].append(stop_order)
+            print(f"Stop order {stop_order_id} added at stop price {stop_price}.")
+
+        #Chcek if stop price is reached
+        if (side == 'bid' and stop_price >= best_price) or (side == 'ask' and stop_price <= best_price):
+            # If stop price is reached, trigger market order
+            print(f"Stop price, {stop_price} reached. Triggering Limit order.")
+            limit_order = self.limit_order(side, limit_price, quantity)
+            return limit_order
+        
+        # If stop price not reached, add to stop orders market
+        else:
+            if stop_price not in self.stop_orders_limit.keys():
+                self.stop_orders_limit[stop_price] = deque()
+            self.stop_orders_limit[stop_price].append(stop_order)
+            print(f"Stop order {stop_order_id} added at stop price {stop_price}. Waiting for trigger.")
+
+            return stop_order
+
