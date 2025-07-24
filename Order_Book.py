@@ -53,6 +53,14 @@ class OrderBook:
         self.stop_orders_limit = SortedDict() #For stop limit orders, key is stop price, value is a list of orders
         self.stop_order_id_counter = itertools.count() #Separate counter for stop orders
 
+    def get_best_bid(self):
+        best_bid = self.bids.peekitem(-1)[0] if self.bids else None
+        return best_bid
+    
+    def get_best_ask(self):
+        best_ask = self.asks.peekitem(0)[0] if self.asks else None
+        return best_ask
+
     def order_fill_logic(self, side, orders, quantity):
         for order in orders:
             if order.quantity >= quantity: #order can be fully filled
@@ -72,7 +80,7 @@ class OrderBook:
             else: #Order is partially filled
                 temp_quantity = quantity
                 quantity -= order.quantity 
-                orders.popright() if side =='bid' else orders.popleft() #Remove order from book 
+                orders.pop() if side =='bid' else orders.popleft() #Remove order from book 
                 print(f"[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.")
                 print(f"[Taker] {temp_quantity} partially filled at price {order.price}. Remaining quantity: {quantity}.")
 
@@ -124,21 +132,21 @@ class OrderBook:
         #If no matching prices, add to book and print 
         if not matching_prices:
             self.add_order(book, limit_order)
-            print(f"No orders available at or below price {price}.")
-        else:
-            for match_price in matching_prices:
-                orders = matching_book[match_price]
-                limit_order.quantity = self.order_fill_logic(orders, limit_order.quantity)
+            return print(f"Order {order_id} added to book at price {price}.")
+        
+        for match_price in matching_prices:
+            orders = matching_book[match_price]
+            limit_order.quantity = self.order_fill_logic(orders, limit_order.quantity)
 
-                if not orders: #If no orders left at this price, remove the price level from the book
-                    del matching_book[match_price]
+            if not orders: #If no orders left at this price, remove the price level from the book
+                del matching_book[match_price]
 
-                if limit_order.quantity == 0: #Order fully filled
-                    return print(f"Order {order_id} fully filled at price {match_price}.")
+            if limit_order.quantity == 0: #Order fully filled
+                return print(f"Order {order_id} fully filled at price {match_price}.")
 
-            if limit_order.quantity > 0: #Order partially filled
-                self.add_order(book, limit_order) #Add remaining order to book
-                print(f"Order {order_id} partially filled. Remaining quantity: {limit_order.quantity}. Added to book at price {price}.")
+        if limit_order.quantity > 0: #Order partially filled
+            self.add_order(book, limit_order) #Add remaining order to book
+            print(f"Order {order_id} partially filled. Remaining quantity: {limit_order.quantity}. Added to book at price {price}.")
 
         return limit_order
     
@@ -146,52 +154,84 @@ class OrderBook:
         order_id = next(self.order_id_counter)
         market_order = Order(order_id, side, None, quantity) #Price is None for market orders
         matching_book = self.bids if side == 'ask' else self.asks #Look at opposite side of book e.g. people buying will look at asks, vice versa.
+        
         if not matching_book:
             raise ValueError("No orders available in market.")
-        else:
-            if side =='bid': # Look at ask book
-                best_price = matching_book.peekitem(0)[0] # Get the LOWEST ask price
-            elif side =='ask': #Look at bid book
-                best_price = matching_book.peekitem(-1)[0] #Get the HIGHEST bid price
-            else:
-                raise ValueError("Side must be 'bid' or 'ask'")
+        
+        best_price = self.get_best_ask() if side == 'bid' else self.get_best_bid()  #Get the best price available
             
-            orders = matching_book[best_price]
+        orders = matching_book[best_price]
 
-            remaining_quantity = self.order_fill_logic(orders, quantity) #Fill the market order with available orders at market price
-            
-            market_order.quantity = quantity - remaining_quantity #Update market order to filled quantity
-            market_order.price = best_price #Set market order price to the best price available
+        remaining_quantity = self.order_fill_logic(orders, quantity) #Fill the market order with available orders at market price
+        
+        market_order.quantity = quantity - remaining_quantity #Update market order to filled quantity
+        market_order.price = best_price #Set market order price to the best price available
 
-            if not orders: # If no orders left at this price, remove the price level from the book
-                del matching_book[best_price]
+        if not orders: # If no orders left at this price, remove the price level from the book
+            del matching_book[best_price]
 
         return market_order
     
-        #Order must be filled immeidiately or cancelled. Filled until all improvement prices are filled.
-    def fill_or_kill_order(self, side, price, quantity): 
-        book = self.bids if side =='ask' else self.asks
-        
-        if not book:
-            raise ValueError("No order avaialable in market.")
-        if price < book.keys():
-            raise ValueError(f"No orders available at or below price {price}.")
-        
-        fok_prices, 
-        
-        #Raise error if not enough liquidity is present
-        if total_quantity < quantity:
-            raise ValueError(f"Not enough quantity available at or below price {price}.")
-        else:
-            for price in fok_prices:
-                orders = book[price]
-                self.order_fill_logic(orders, quantity)
-                if not orders:
-                    del book[price]
 
-    def immediate_or_cancel_order(self):
+    #Order must be filled immeidiately or cancelled. Filled until all improvement prices are filled.
+    def fill_or_kill_order(self, side, price, quantity): 
+        order_id = next(self.order_id_counter)
+        fok_order = Order(order_id, side, price, quantity)
+        matching_book = self.bids if side =='ask' else self.asks
+        
+        if not matching_book:
+            raise ValueError("No order avaialable in market.")
+        
+        matching_prices, total_quantity = self.liquidity_check(matching_book, fok_order) #Check for available liquidity at or below price
+
+        if not matching_prices:
+            return print(f"No orders available at or below price {price}. Order {order_id} cancelled.")
+        
+        if total_quantity < quantity:
+            return print(f"Not enough liquidity available at or below price {price}. Order {order_id} cancelled.")
+        
+        #If enough liquidity is present, fill the order at the best prices available
+        for price in matching_prices:
+            orders = matching_book[price]
+            fok_order.quantity = self.order_fill_logic(side, orders, fok_order.quantity)
+
+            if fok_order.quantity == 0:  # Order fully filled
+                print(f"Order {order_id} fully filled at price {price}.")
+                return fok_order
+            
+            if not orders:
+                del matching_book[price]
+
+        return fok_order
+
+    def immediate_or_cancel_order(self, side, price, quantity):
         """"Fill as much as possible at the best price, cancel the rest."""
-        pass
+        order_id = next(self.order_id_counter)
+        ioc_order = Order(order_id, side, price, quantity)
+        matching_book = self.bids if side == 'ask' else self.asks
+
+        if not matching_book:
+            return print(f"No orders available in market. Order {order_id} cancelled.")
+        
+        matching_prices, total_quantity = self.liquidity_check(matching_book, ioc_order)
+        
+        if not matching_prices:
+            return print(f"No orders available at or below price {price}. Order {order_id} cancelled.")
+        
+        for match_price in matching_prices:
+            orders = matching_book[match_price]
+            ioc_order.quantity = self.order_fill_logic(side, orders, ioc_order.quantity)
+            
+            if not orders:
+                del matching_book[match_price]
+        
+        if quantity > 0:
+            filled_quantity = quantity - ioc_order.quantity
+            print(f"Order {order_id} partially filled. Filled quantity: {filled_quantity}. Remaining quantity: {ioc_order.quantity}. Remaining Order cancelled.")
+            return ioc_order
+        else:
+            print(f"Order {order_id} fully filled at price {match_price}.")
+            return ioc_order
 
     def stop_order(self, side, stop_price, quantity):
         """Triggers market order once stop price is reached."""
