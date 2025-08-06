@@ -63,7 +63,7 @@ class OrderBook:
         best_ask = self.asks.peekitem(0)[0] if self.asks else None
         return best_ask
 
-    def order_fill_logic(self, side, orders, quantity):
+    def order_fill_logic(self, orders, quantity):
         while quantity > 0 and orders:
             order = orders[0]
 
@@ -111,14 +111,22 @@ class OrderBook:
         return matching_prices, total_quantity
 
     def stop_market_order_check(self):
-        best_bid = -self.get_best_bid()
+        best_bid = self.get_best_bid()
         best_ask = self.get_best_ask()
         # Check if there are any stop market orders that can be triggered
-        if best_bid is not None and self.stop_market_orders_bid:
-            for stop_price, orders in self.stop_market_orders_bid.items():
-                #Start clearing orders at best_bid until it is above stop_price
-                if stop_price >= best_bid:
-                    for o in orders:
+        for stop_price in self.stop_market_orders_bid:
+            #Bid stop prices less than ask no market order will be trigerred
+            if best_ask is not None and best_ask <= stop_price:
+                orders = self.stop_market_orders_bid[stop_price]
+                for o in orders:
+                    stop_quantity = o.quantity
+                    market_order = self.market_order('buy',stop_quantity)
+                    if market_order.quantity != stop_quantity:
+                        o.quantity -= market_order.quantity
+                        break
+
+        for stop_price in self.stop_market_orders_ask:
+            if best_bid is not None and best_bid 
                         
         return None
 
