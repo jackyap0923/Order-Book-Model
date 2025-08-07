@@ -70,22 +70,22 @@ class OrderBook:
             if order.quantity > quantity: #order can be fully filled
                 order.quantity -= quantity 
                 print(f"[Taker] Order Filled at price {order.price}") #Order remains in book but with reduced quantity and exit for
-                return print(f"[Maker] Order_id: {order.order_id}. {order.quantity} partially filled at price {order.price}. Remaining quantity: {order.quantity}")
-                
+                print(f"[Maker] Order_id: {order.order_id}. {order.quantity} partially filled at price {order.price}. Remaining quantity: {order.quantity}")
+                quantity = 0
+
             elif order.quantity == quantity:
                 orders.popleft() #Remove order from book if maker order is fully filled
                 print(f"[Taker] Order Filled at price {order.price}")
-                return  print(f'[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.')
-                
+                print(f'[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.')
+                quantity = 0
+
             else: #order.quantity < quantity
                 quantity -= order.quantity
                 print(f"[Maker] Order_id: {order.order_id}. {order.quantity} fully filled at price {order.price}.")
                 print(f"[Taker] Partially filled at price {order.price}. Remaining quantity: {quantity}.")
                 orders.popleft()
-                    
-        if quantity > 0:
-            print(f"[Taker] Unfilled quantity: {quantity} due to lack of liquidity.")
-            return quantity
+        
+        return quantity
         
     
     def liquidity_check(self, book, order):
@@ -109,27 +109,76 @@ class OrderBook:
                 break #Exit if price is not within the limit
 
         return matching_prices, total_quantity
-
-    def stop_market_order_check(self):
+    
+    def trigger_stop_orders(self):
         best_bid = self.get_best_bid()
         best_ask = self.get_best_ask()
-        # Check if there are any stop market orders that can be triggered
-        for stop_price in self.stop_market_orders_bid:
-            #Bid stop prices less than ask no market order will be trigerred
+
+        ###===== Stop-Market Orders =====###
+
+        # Trigger buy stop-market orders: market buy when ask <= stop
+        for stop_price in list(self.stop_market_orders_bid):
             if best_ask is not None and best_ask <= stop_price:
                 orders = self.stop_market_orders_bid[stop_price]
-                for o in orders:
+                while orders:
+                    o = orders[0]
                     stop_quantity = o.quantity
                     market_order = self.market_order('buy',stop_quantity)
-                    if market_order.quantity != stop_quantity:
-                        o.quantity -= market_order.quantity
+                    print("[Triggered] Stop-Market Buy:", market_order)
+                    o.quantity -= market_order.quantity #Check Remaining quantity in order
+                    if o.quantity <= 0: #remove order if order quantity <= 0
+                        orders.popleft()
+                    else: #if threre are remaining quantities we exit the loop
                         break
+                if not orders:
+                    del self.stop_market_orders_ask[stop_price]
 
-        for stop_price in self.stop_market_orders_ask:
-            if best_bid is not None and best_bid 
-                        
-        return None
+        # Trigger sell stop-market orders: market sell when bid >= stop
+        for stop_price in list(self.stop_market_orders_ask):
+            if best_bid is not None and best_bid >= stop_price:
+                orders = self.stop_market_orders_ask[stop_price]
+                while orders:
+                    o = orders[0]
+                    stop_quantity = o.quantity
+                    market_order = self.market_order('sell',stop_quantity)
+                    print("[Triggered] Stop-Market Sell:", market_order)
+                    o.quantity -= market_order.quantity
+                    if o.quantity <= 0:
+                        orders.popleft()
+                    else:
+                        break
+                if not orders:
+                    del self.stop_market_orders_bid[stop_price]
 
+        
+        ###===== Stop-Limit Orders =====###
+
+        # Trigger buy stop-limit orders: place limit buy when ask <= stop
+        for stop_price in list(self.stop_market_orders_bid.keys()):
+            if best_ask is not None and best_ask <= stop_price:
+                orders = self.stop_market_orders_bid[stop_price]
+                while orders:
+                    o = orders[0]
+                    stop_quantity = o.quantity
+                    limit_order = self.limit_order('buy',stop_price,stop_quantity)
+                    print("[Triggered] Stop-Limit Buy:", limit_order)
+                    orders.popleft()
+                if not orders:
+                    del self.stop_market_orders_ask[stop_price]
+
+        # Trigger sell stop-limit orders: place limit sell when bid >= stop
+        for stop_price in list(self.stop_market_orders_ask.keys()):
+            if best_bid is not None and best_bid >= stop_price:
+                orders = self.stop_market_orders_ask[stop_price]
+                while orders:
+                    o = orders[0]
+                    stop_quantity = o.quantity
+                    limit_order = self.limit_order('sell',stop_price,stop_quantity)
+                    print("[Triggered] Stop-Limit Sell:", limit_order)
+                    orders.popleft()
+                if not orders:
+                    del self.stop_market_orders_bid[stop_price]
+        
     def add_order(self, book, order):
         """"Add an order to the order book. Does not change order id."""
         price = order.price
