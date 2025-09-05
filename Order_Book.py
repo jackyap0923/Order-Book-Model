@@ -357,3 +357,5 @@ class OrderBook:
 
             return stop_order
 
+class OrderBookVis(OrderBook):
+    
